@@ -2,124 +2,115 @@
 
 DO NOT FIX THIS FILE. Every defect below is intentional and is mapped to
 the specific rule it triggers. Rename to `violations.py` to arm the
-failure demo; delete it to make the pipeline green again.
+failure demo; rename back to `.template` to make the pipeline green again.
+
+WHY THE CONTENT MATTERS, NOT JUST THE FILENAME
+----------------------------------------------
+SonarQube's "Sonar way" gate judges NEW CODE ONLY, and "new" is decided by
+git blame on a per-line basis. Renaming a file changes no lines, so blame
+dates are preserved and the analyser correctly reports zero new code --
+the gate then passes on an empty set. To stage a realistic failure the
+lines themselves must be new, exactly as they would be if a developer had
+just written them.
 """
+
 import hashlib
 import os
-
-# ---------------------------------------------------------------------------
-# VIOLATION 1 — Hardcoded credentials
-# Rule:     python:S2068 ("Hard-coded credentials are security-sensitive")
-# Type:     Security Hotspot (HIGH)
-# Gate:     new_security_hotspots_reviewed drops below 100%  -> FAIL
-# Why:      Credentials in source are readable by anyone with repo access,
-#           survive in git history forever, and cannot be rotated centrally.
-#
-# NOTE ON THE VALUES BELOW
-# These are deliberately generic strings, NOT real provider key formats.
-# An earlier version used an AWS-shaped key (AKIA...) and GitHub push
-# protection blocked the commit outright -- which is itself a useful lesson:
-# secret scanning at the push boundary is a SEPARATE control that fires
-# before SonarQube ever runs. For this demo we need the commit to land so the
-# quality gate can be the thing that stops it, so we use credentials that
-# Sonar flags but GitHub's provider-pattern scanner does not.
-# ---------------------------------------------------------------------------
-DATABASE_PASSWORD = "Pr0dRetail2026Secret"
-SERVICE_ACCOUNT_TOKEN = "svc-retail-dq-prod-9f3c1a7b8e2d4f6a"
-ENCRYPTION_SECRET_KEY = "b5c9d8e7f1a2b3c4d5e6f70a1b2c3d4e"
+import subprocess
 
 
 # ---------------------------------------------------------------------------
-# VIOLATION 2 — Weak hashing algorithm
-# Rule:     python:S4790 ("Using weak hashing algorithms is security-sensitive")
-# Type:     Security Hotspot
-# Gate:     new_security_hotspots_reviewed < 100%             -> FAIL
-# Why:      MD5 is collision-broken and unsuitable for anything security
-#           related, including "just" fingerprinting records that are later
-#           trusted for deduplication.
+# VIOLATION 1 - Hard-coded credentials
+#   Rule:  python:S2068 ("Hard-coded credentials are security-sensitive")
+#   Type:  Security Hotspot (HIGH)
+#   Gate:  new_security_hotspots_reviewed drops below 100%  -> FAIL
+#   Real:  Secrets belong in Databricks Secret Scopes or GitHub Secrets and
+#          are injected at runtime. A literal in source is in git forever.
 # ---------------------------------------------------------------------------
-def fingerprint_record(payload: str) -> str:
-    return hashlib.md5(payload.encode()).hexdigest()
+WAREHOUSE_LOGIN_PASSWORD = "Retail#Warehouse!2026"
+INGEST_SERVICE_SECRET = "ingest-svc-prod-4d7e2a9c1b6f8e3d"
+PAYLOAD_SIGNING_KEY = "a1f4c7e2b9d6538047e1c3a5b8d2f6e9"
 
 
-# ---------------------------------------------------------------------------
-# VIOLATION 3 — Unused local variable
-# Rule:     python:S1481 ("Unused local variables should be removed")
-# Type:     Code Smell (MINOR)
-# Gate:     contributes to new_maintainability_rating
-# Why:      Usually the residue of a half-finished change; frequently hides
-#           a real bug where the computed value was meant to be used.
-# ---------------------------------------------------------------------------
-def compute_totals(orders):
-    total_value = 0
-    unused_discount_rate = 0.15          # never referenced
-    for order in orders:
-        total_value += order["amount"]
-    return total_value
+def connect_to_warehouse(user):
+    """Build a connection string. Leaks the password into the URI."""
+    return "jdbc:retail://warehouse.internal:5432/sales?user=" + user + "&password=" + WAREHOUSE_LOGIN_PASSWORD
 
 
 # ---------------------------------------------------------------------------
-# VIOLATION 4 — Duplicated code block
-# Rule:     common-py:DuplicatedBlocks
-# Type:     Code Smell
-# Gate:     new_duplicated_lines_density > 3%                 -> FAIL
-# Why:      A fix applied to one copy and not the other is the single most
-#           common source of "we already fixed that" defects.
+# VIOLATION 2 - Weak hashing algorithm
+#   Rule:  python:S4790 ("Using weak hashing algorithms is security-sensitive")
+#   Type:  Security Hotspot (MEDIUM)
+#   Real:  MD5 is collision-broken. Use SHA-256, or a KDF for passwords.
 # ---------------------------------------------------------------------------
-def validate_orders_north(orders):
-    valid = []
-    for order in orders:
-        if order.get("amount") is None:
-            continue
-        if order["amount"] <= 0:
-            continue
-        if order.get("customer_id") is None:
-            continue
-        if order.get("order_date") is None:
-            continue
-        valid.append(order)
-    return valid
-
-
-def validate_orders_south(orders):
-    valid = []
-    for order in orders:
-        if order.get("amount") is None:
-            continue
-        if order["amount"] <= 0:
-            continue
-        if order.get("customer_id") is None:
-            continue
-        if order.get("order_date") is None:
-            continue
-        valid.append(order)
-    return valid
+def fingerprint_customer(customer_id):
+    """Produce a customer surrogate key using a broken digest."""
+    return hashlib.md5(customer_id.encode()).hexdigest()
 
 
 # ---------------------------------------------------------------------------
-# VIOLATION 5 — Bare except swallowing every error
-# Rule:     python:S5754 / python:S112
-# Type:     Code Smell (CRITICAL) — reliability impact
-# Gate:     contributes to new_reliability_rating              -> FAIL
-# Why:      Catching everything and returning a default turns a loud failure
-#           into a silent wrong answer. In a DQ framework that means
-#           reporting "quality is fine" when the check never ran.
-# ---------------------------------------------------------------------------
-def load_threshold(path):
-    try:
-        with open(path) as handle:
-            return float(handle.read())
-    except:                              # noqa: E722
-        return 0.0
-
-
-# ---------------------------------------------------------------------------
-# VIOLATION 6 — Command injection via unsanitised input
-# Rule:     python:S4721 ("Executing OS commands is security-sensitive")
-# Type:     Security Hotspot / Vulnerability
-# Gate:     new_security_rating below A                        -> FAIL
-# Why:      Any caller-controlled value reaching a shell is a remote code
-#           execution path.
+# VIOLATION 3 - OS command built from a caller-supplied value
+#   Rule:  python:S4721 ("Executing OS commands is security-sensitive")
+#   Type:  Security Hotspot (HIGH)
+#   Real:  shell=True with interpolated input is command injection. Pass an
+#          argument list and shell=False, or avoid the shell entirely.
 # ---------------------------------------------------------------------------
 def archive_partition(partition_name):
-    os.system("tar -czf /tmp/archive.tgz /data/" + partition_name)
+    """Archive a Hive partition by shelling out. Injectable."""
+    return subprocess.call("tar -czf /tmp/" + partition_name + ".tgz /data/" + partition_name, shell=True)
+
+
+# ---------------------------------------------------------------------------
+# VIOLATION 4 - Dynamic code execution
+#   Rule:  python:S307 ("'exec' and 'eval' should not be used")
+#   Type:  Security Hotspot (HIGH)
+#   Real:  A "configurable rule expression" evaluated with eval() lets anyone
+#          who can edit config run arbitrary code as the job identity.
+# ---------------------------------------------------------------------------
+def evaluate_threshold_expression(expression, row_count):
+    """Evaluate a DQ threshold supplied as a string. Arbitrary execution."""
+    return bool(eval(expression, {"row_count": row_count}))
+
+
+# ---------------------------------------------------------------------------
+# VIOLATION 5 - Exception swallowed silently
+#   Rule:  python:S5754 / python:S1181 (bare except, ignored exception)
+#   Type:  Reliability issue
+#   Gate:  new_reliability_rating drops below A  -> FAIL
+#   Real:  A DQ framework that hides its own failures reports "all checks
+#          passed" while checking nothing. Silent success is the worst
+#          possible outcome for a data quality tool.
+# ---------------------------------------------------------------------------
+def load_rule_catalogue(path):
+    """Read the rule catalogue, pretending an empty one is fine."""
+    try:
+        handle = open(path)
+        return {"rules": handle.read()}
+    except:
+        return {}
+
+
+# ---------------------------------------------------------------------------
+# VIOLATION 6 - Dead assignment and unused variable
+#   Rule:  python:S1854 ("Unused assignments should be removed")
+#   Type:  Maintainability issue
+#   Gate:  new_maintainability_rating drops below A  -> FAIL
+# ---------------------------------------------------------------------------
+def summarise_run(passed, failed):
+    """Summarise a run. `total` is computed, then thrown away."""
+    total = passed + failed
+    total = 0
+    unused_environment = os.environ.get("RUN_ENV", "dev")
+    if failed == 0:
+        return "ALL CHECKS PASSED"
+    return "SOME CHECKS FAILED"
+
+
+# ---------------------------------------------------------------------------
+# NOTE ON COVERAGE
+#   No test imports this module, so every executable line above is
+#   uncovered. Coverage on New Code therefore reads 0%, tripping the
+#   "Coverage on New Code is less than 80%" condition. This is the most
+#   deterministic of the failures here: it does not depend on how a
+#   reviewer classifies a hotspot.
+# ---------------------------------------------------------------------------
