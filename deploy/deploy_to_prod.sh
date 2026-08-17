@@ -28,25 +28,41 @@ databricks workspace mkdirs "${PROD_PATH}"
 
 # --- 3. Import the source tree -------------------------------------------
 # --overwrite  replace files that already exist (this is a redeploy, not a merge)
-# --format SOURCE  treat .py files as source, so notebooks keep their cell
-#                  structure and plain modules import correctly.
 #
 # NOTE: `workspace import-dir` uploads the WHOLE directory. We deploy src/ and
-# notebooks/ only — tests, CI config and docs have no business in PROD.
+# notebooks/ only -- tests, CI config and docs have no business in PROD.
+#
+# It also has no --exclude flag, so we stage a copy and strip anything PROD
+# must not receive. bad_examples/ holds the deliberate-violation template used
+# for the failure demo; shipping fake credentials to PROD would undercut the
+# very control this pipeline exists to demonstrate.
+STAGE="$(mktemp -d)"
+trap 'rm -rf "${STAGE}"' EXIT
+
 for DIR in src notebooks; do
-  echo "==> Importing ${DIR}/ -> ${PROD_PATH}/${DIR}"
-  databricks workspace import-dir "${DIR}" "${PROD_PATH}/${DIR}" --overwrite
-done
+  cp -r "${DIR}" "${STAGE}/${DIR}"
+  done
+  rm -rf "${STAGE}/src/bad_examples"
+  find "${STAGE}" -name '*.template' -delete
+  find "${STAGE}" -name '__pycache__' -type d -prune -exec rm -rf {} +
 
-# --- 4. Ship the check catalogue -----------------------------------------
-# checks.yaml is configuration, not code, but PROD needs it to run.
-databricks workspace import checks.yaml "${PROD_PATH}/checks.yaml" \
-  --format AUTO --overwrite
+  for DIR in src notebooks; do
+    echo "==> Importing ${DIR}/ -> ${PROD_PATH}/${DIR}"
+      databricks workspace import-dir "${STAGE}/${DIR}" "${PROD_PATH}/${DIR}" --overwrite
+      done
 
-# --- 5. Verify ------------------------------------------------------------
-# A deploy that reports success without confirming what landed is a deploy
-# you cannot trust. List the target so the log shows exactly what is there.
-echo "==> Contents of ${PROD_PATH}:"
-databricks workspace list "${PROD_PATH}" --output json
+      # --- 4. Ship the check catalogue -----------------------------------------
+      # checks.yaml is configuration, not code, but PROD needs it to run.
+      # `workspace import` takes the TARGET path as its only positional argument;
+      # the local file is passed with --file. Reversing these is a common trip-up.
+      databricks workspace import "${PROD_PATH}/checks.yaml" \
+        --file checks.yaml --format AUTO --overwrite
 
-echo "==> Deployment complete."
+        # --- 5. Verify ------------------------------------------------------------
+        # A deploy that reports success without confirming what landed is a deploy
+        # you cannot trust. List the target so the log shows exactly what is there.
+        echo "==> Contents of ${PROD_PATH}:"
+        databricks workspace list "${PROD_PATH}" --output json
+
+        echo "==> Deployment complete."
+        
