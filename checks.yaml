@@ -1,0 +1,22 @@
+# Declarative check catalogue.
+# A data steward can add a rule here without touching Python -- but the change
+# still travels through PR review, SonarQube and the deployment gate.
+datasets:
+  - name: retail_orders
+    source: samples.tpch.orders
+    checks:
+      - type: null_check
+        columns: [o_orderkey, o_custkey, o_orderdate]
+        threshold: 1.0          # zero tolerance for missing keys
+
+      - type: duplicate_check
+        key_columns: [o_orderkey]
+        threshold: 1.0          # order id must be unique
+
+      - type: record_count_check
+        min_rows: 1000          # a load smaller than this is an upstream failure
+        max_rows: 10000000      # guards against an accidental full reload
+
+      - type: freshness_check
+        timestamp_column: o_orderdate
+        max_age_hours: 168      # sample data is static; 7 days for the demo

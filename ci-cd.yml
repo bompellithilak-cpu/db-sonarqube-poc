@@ -1,0 +1,180 @@
+# ===========================================================================
+#  Databricks DQ Framework — CI/CD with SonarQube quality gate
+# ===========================================================================
+#  Flow:  checkout -> deps -> pytest+coverage -> Sonar scan -> quality gate
+#         -> (only if gate passed AND branch is main) deploy to PROD folder
+#
+#  The gate is ENFORCING: if it fails, the job fails and the deploy job never
+#  starts, because `deploy` declares `needs: quality`.
+# ===========================================================================
+name: DQ Framework CI/CD
+
+on:
+  push:
+    branches: [main]          # merges to main can deploy
+  pull_request:
+    branches: [main]          # PRs are analysed but never deploy
+  workflow_dispatch:           # manual trigger, useful for demos
+
+# Cancel an in-flight run when a newer commit arrives on the same ref.
+# Prevents two deployments racing each other into the same PROD folder.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write         # lets Sonar post the PR decoration comment
+
+jobs:
+  # =========================================================================
+  #  JOB 1 — Quality: test, measure coverage, scan, and evaluate the gate
+  # =========================================================================
+  quality:
+    name: Test & SonarQube Quality Gate
+    runs-on: ubuntu-latest
+
+    steps:
+      # --- 1. Get the code -------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Sonar needs full history to attribute issues to the right commit
+          # and to compute "new code". Shallow clones break blame data.
+          fetch-depth: 0
+
+      # --- 2. Runtimes -----------------------------------------------------
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'                 # cache deps between runs
+
+      - name: Set up Java
+        # PySpark needs a JVM. Java 17 is the current Spark-supported LTS.
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      # --- 3. Dependencies -------------------------------------------------
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      # --- 4. Tests + coverage --------------------------------------------
+      - name: Run unit tests with coverage
+        env:
+          # Avoids UnknownHostException when the runner hostname won't resolve.
+          SPARK_LOCAL_IP: 127.0.0.1
+        run: |
+          pytest tests \
+            --cov=dq_framework \
+            --cov-report=xml:coverage.xml \
+            --cov-report=term \
+            --junitxml=test-results.xml
+        # No `continue-on-error`: failing tests must stop the pipeline here,
+        # before Sonar ever runs.
+
+      - name: Upload test artifacts
+        # `always()` so the reports are available even when tests failed —
+        # that is exactly when you need them.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-and-coverage-reports
+          path: |
+            coverage.xml
+            test-results.xml
+          retention-days: 7
+
+      # --- 5. SonarQube analysis ------------------------------------------
+      - name: SonarQube scan
+        uses: SonarSource/sonarqube-scan-action@v4
+        env:
+          # Injected from GitHub Secrets — never hardcoded in the repo.
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          # For self-hosted SonarQube Community Edition, also set:
+          # SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+      # --- 6. Quality gate -------------------------------------------------
+      - name: Wait for SonarQube Quality Gate
+        id: sonar_gate
+        uses: SonarSource/sonarqube-quality-gate-action@v1
+        # The scanner returns as soon as the report is UPLOADED; SonarCloud
+        # then processes it on a queue. This action polls the Compute Engine
+        # task until analysis completes, so the verdict belongs to THIS scan
+        # and not the previous one. Without it the gate is meaningless.
+        timeout-minutes: 10
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      # --- 7. Report -------------------------------------------------------
+      - name: Publish gate result to the job summary
+        if: always()
+        run: |
+          STATUS="${{ steps.sonar_gate.outputs.quality-gate-status }}"
+          echo "## SonarQube Quality Gate" >> $GITHUB_STEP_SUMMARY
+          if [ "$STATUS" = "PASSED" ]; then
+            echo "Result: **PASSED** — deployment will proceed." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "Result: **${STATUS:-FAILED}** — deployment BLOCKED." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Review the findings in SonarCloud, fix them, and push again." >> $GITHUB_STEP_SUMMARY
+          fi
+
+  # =========================================================================
+  #  JOB 2 — Deploy: only runs when the gate passed and we are on main
+  # =========================================================================
+  deploy:
+    name: Deploy to Databricks PROD
+    runs-on: ubuntu-latest
+    # THIS is the enforcement point. `needs` makes deploy depend on quality;
+    # if the gate step failed, `quality` failed, and this job is skipped.
+    needs: quality
+    # Belt and braces: never deploy from a pull request or a feature branch,
+    # even if someone later loosens the job dependency.
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+
+    # A GitHub Environment gives you a deployment record and, on paid plans,
+    # optional manual approval before this job runs.
+    environment:
+      name: production
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Databricks CLI
+        # The v0.2xx+ CLI is a single Go binary; this installer is the
+        # supported way to get it onto a runner.
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+          databricks --version
+
+      - name: Verify Databricks connectivity
+        # Fail early with a clear message rather than midway through an import.
+        env:
+          DATABRICKS_HOST:  ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+        run: databricks current-user me
+
+      - name: Deploy to PROD folder
+        env:
+          DATABRICKS_HOST:  ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          PROD_PATH: /Shared/PROD/DQ_Framework
+        run: bash deploy/deploy_to_prod.sh
+
+      - name: Record deployment in the job summary
+        run: |
+          echo "## Deployment complete" >> $GITHUB_STEP_SUMMARY
+          echo "- Target: \`/Shared/PROD/DQ_Framework\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Commit: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Actor:  @${{ github.actor }}" >> $GITHUB_STEP_SUMMARY

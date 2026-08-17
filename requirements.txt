@@ -1,0 +1,4 @@
+# Runtime dependencies for the DQ framework.
+# Pinned to minor versions so CI and Databricks stay reproducible.
+pyspark==3.5.1
+pyyaml==6.0.2
