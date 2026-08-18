@@ -1,5 +1,7 @@
 # Demo: this edit was made in the Databricks Git folder and pushed from here.
 
+import hashlib  # Needed for fingerprint_customer
+
 def fingerprint_customer(customer_id):
     """Produce a customer surrogate key using a broken digest."""
     return hashlib.md5(customer_id.encode()).hexdigest()
