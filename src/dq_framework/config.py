@@ -1,5 +1,5 @@
 # Demo: this edit was made in the Databricks Git folder and pushed from here.
-#Demo
+#democheck2
 """Declarative check configuration, loaded from YAML.
 
 Keeping the check catalogue in YAML rather than code means a data steward
