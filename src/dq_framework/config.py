@@ -1,29 +1,5 @@
 # Demo: this edit was made in the Databricks Git folder and pushed from here.
 
-#--------------------
-# VIOLATION 1 - Hard-coded credentials
-#   Rule:  python:S2068 ("Hard-coded credentials are security-sensitive")
-#   Type:  Security Hotspot (HIGH)
-#   Gate:  new_security_hotspots_reviewed drops below 100%  -> FAIL
-#   Real:  Secrets belong in Databricks Secret Scopes or GitHub Secrets and
-#          are injected at runtime. A literal in source is in git forever.
-# ---------------------------------------------------------------------------
-WAREHOUSE_LOGIN_PASSWORD = "Retail#Warehouse!2026"
-INGEST_SERVICE_SECRET = "ingest-svc-prod-4d7e2a9c1b6f8e3d"
-PAYLOAD_SIGNING_KEY = "a1f4c7e2b9d6538047e1c3a5b8d2f6e9"
-
-
-def connect_to_warehouse(user):
-    """Build a connection string. Leaks the password into the URI."""
-    return "jdbc:retail://warehouse.internal:5432/sales?user=" + user + "&password=" + WAREHOUSE_LOGIN_PASSWORD
-
-
-# ---------------------------------------------------------------------------
-# VIOLATION 2 - Weak hashing algorithm
-#   Rule:  python:S4790 ("Using weak hashing algorithms is security-sensitive")
-#   Type:  Security Hotspot (MEDIUM)
-#   Real:  MD5 is collision-broken. Use SHA-256, or a KDF for passwords.
-# ---------------------------------------------------------------------------
 def fingerprint_customer(customer_id):
     """Produce a customer surrogate key using a broken digest."""
     return hashlib.md5(customer_id.encode()).hexdigest()
