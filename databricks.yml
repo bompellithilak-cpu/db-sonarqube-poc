@@ -1,0 +1,82 @@
+# ===========================================================================
+#  Databricks Asset Bundle — declarative deployment for the DQ Framework.
+#
+#  This REPLACES deploy/deploy_to_prod.sh's raw `databricks workspace
+#  import-dir` file copy. A DAB is the Databricks-recommended way to ship to
+#  production, and the difference is not cosmetic:
+#
+#    - Declarative, not scripted. The desired state of every file, job, and
+#      permission lives in this repo and is diffed on each deploy. The old
+#      script only ever knew how to overwrite; it had no concept of "this
+#      file should no longer exist" or "this job should now run hourly".
+#    - Environment-parameterized. One bundle, two targets below (dev/prod),
+#      each with its own workspace path, run-as identity, and permissions —
+#      not two copies of a bash script with different env vars.
+#    - Jobs and permissions as code, not just notebooks. `import-dir` could
+#      only copy files. It never created the Databricks Job that actually
+#      *runs* them on a schedule — a human had to click that together by
+#      hand, which is exactly the kind of untracked production change this
+#      whole pipeline exists to prevent.
+#    - Validated before it touches the workspace. `databricks bundle
+#      validate` catches a bad config with zero API calls; `import-dir` only
+#      finds out mid-copy.
+#
+#  This was the single biggest "POC simplification" in the original design —
+#  made explicit here rather than left for someone to notice.
+# ===========================================================================
+bundle:
+  name: dq_framework
+
+include:
+  - resources/*.yml
+
+variables:
+  results_table:
+    description: Fully-qualified Unity Catalog table the DQ scorecard is appended to.
+    default: main.default.dq_results
+  deploy_service_principal_id:
+    description: >
+      Application ID of the github-actions-ci service principal. This is the
+      identity GitHub Actions authenticates as (OAuth machine-to-machine) and
+      the identity the prod job resource runs as — a human account is never
+      in this path. Not a secret: application IDs are not credentials.
+    default: e132a6d7-6343-41fb-8794-ca888ac66034
+
+# Files sync to ${workspace.root_path}/files on `bundle deploy`, mirroring
+# this repo's layout. Same intent as the old script's staged-copy step —
+# keep CI-only and deliberately-broken demo assets out of production — just
+# declared instead of scripted with mktemp/find/rm.
+sync:
+  exclude:
+    - src/bad_examples/**
+    - "**/*.template"
+    - tests/**
+    - docs/**
+    - .github/**
+    - deploy/**
+    - "**/__pycache__/**"
+    - "**/.pytest_cache/**"
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      root_path: /Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+    run_as:
+      user_name: ${workspace.current_user.userName}
+
+  prod:
+    mode: production
+    workspace:
+      # Same access-restricted path used by the earlier file-copy deploy:
+      # under a Home directory, so it defaults to owner + Admins only rather
+      # than inheriting /Shared's unrevocable "All workspace users" grant.
+      root_path: /Users/bompelli.thilak@gmail.com/PROD_DQ_Framework
+    run_as:
+      service_principal_name: ${var.deploy_service_principal_id}
+    permissions:
+      - service_principal_name: ${var.deploy_service_principal_id}
+        level: CAN_MANAGE
+      - user_name: bompelli.thilak@gmail.com
+        level: CAN_MANAGE
