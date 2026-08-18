@@ -178,12 +178,17 @@ jobs:
           DATABRICKS_HOST:          ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_CLIENT_ID:     ${{ secrets.DATABRICKS_CLIENT_ID }}
           DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
-          PROD_PATH: /Shared/PROD/DQ_Framework
+          # Moved out of /Shared: that root grants "All workspace users: Can
+          # Manage" to every subfolder and it cannot be revoked per-folder.
+          # A path under the owner's Home directory defaults to owner +
+          # Admins only, so access is actually restricted to the people (and
+          # service principals) explicitly granted it below.
+          PROD_PATH: /Users/bompelli.thilak@gmail.com/PROD_DQ_Framework
         run: bash deploy/deploy_to_prod.sh
 
       - name: Record deployment in the job summary
         run: |
           echo "## Deployment complete" >> $GITHUB_STEP_SUMMARY
-          echo "- Target: \`/Shared/PROD/DQ_Framework\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Target: \`/Users/bompelli.thilak@gmail.com/PROD_DQ_Framework\`" >> $GITHUB_STEP_SUMMARY
           echo "- Commit: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- Actor:  @${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
