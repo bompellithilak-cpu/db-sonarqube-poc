@@ -1,0 +1,43 @@
+# ===========================================================================
+#  Job resource — the piece `databricks workspace import-dir` never had.
+#
+#  The old deploy script could copy notebook FILES into a folder. It could
+#  not create the Databricks Job that runs them, set who owns that job, or
+#  say what happens if a task fails. Someone had to click that together by
+#  hand in the UI — an untracked, unreviewed production change, which is
+#  exactly the class of problem this whole pipeline exists to close.
+#
+#  Defining it here means the job itself goes through the same commit,
+#  review, and (indirectly) quality-gate path as the code it runs.
+# ===========================================================================
+resources:
+  jobs:
+    dq_framework_job:
+      name: "DQ Framework — ${bundle.target}"
+      tags:
+        environment: ${bundle.target}
+        managed_by: databricks_asset_bundle
+
+      tasks:
+        - task_key: run_dq_checks
+          notebook_task:
+            notebook_path: ../notebooks/02_run_dq_checks.py
+            base_parameters:
+              config_path: checks.yaml
+              results_table: ${var.results_table}
+              fail_job_on_error: "true"
+          # No cluster block: this runs on serverless compute. Databricks
+          # Free Edition doesn't offer classic all-purpose clusters, and
+          # serverless is also just less to configure, size, and patch —
+          # the right default even where classic clusters are available.
+
+      # Deliberately unscheduled. In this POC the job is deployed by CI and
+      # triggered manually (or by the demo script) so the timing stays
+      # predictable to narrate. A real cadence belongs here once this framework
+      # is running against a real production dataset, e.g.:
+      #   schedule:
+      #     quartz_cron_expression: "0 0 6 * * ?"
+      #     timezone_id: UTC
+
+      email_notifications:
+        on_failure: []   # wire in a real address before this goes further
