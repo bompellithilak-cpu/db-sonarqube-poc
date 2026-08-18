@@ -142,6 +142,11 @@ jobs:
     environment:
       name: production
 
+    env:
+      DATABRICKS_HOST:          ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_CLIENT_ID:     ${{ secrets.DATABRICKS_CLIENT_ID }}
+      DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -152,43 +157,41 @@ jobs:
           python-version: '3.11'
 
       - name: Install Databricks CLI
-        # The v0.2xx+ CLI is a single Go binary; this installer is the
-        # supported way to get it onto a runner.
+        # The v0.2xx+ CLI is a single Go binary that also speaks Asset
+        # Bundles (`databricks bundle ...`); this installer is the supported
+        # way to get it onto a runner.
         run: |
           curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
           databricks --version
 
       - name: Verify Databricks connectivity
-        # Fail early with a clear message rather than midway through an import.
-        # Auth is OAuth machine-to-machine via a service principal, not a
-        # personal access token: the CLI auto-selects OAuth M2M when
+        # Fail early with a clear message rather than midway through a
+        # deploy. Auth is OAuth machine-to-machine via a service principal,
+        # not a personal access token: the CLI auto-selects OAuth M2M when
         # DATABRICKS_CLIENT_ID / DATABRICKS_CLIENT_SECRET are set instead of
         # DATABRICKS_TOKEN. This means the pipeline's identity in Databricks
         # is an application ("github-actions-ci"), not a person -- it keeps
         # working if the person who set it up leaves, and it can be scoped to
         # exactly the PROD folder rather than inheriting a user's full access.
-        env:
-          DATABRICKS_HOST:          ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_CLIENT_ID:     ${{ secrets.DATABRICKS_CLIENT_ID }}
-          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
         run: databricks current-user me
 
-      - name: Deploy to PROD folder
-        env:
-          DATABRICKS_HOST:          ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_CLIENT_ID:     ${{ secrets.DATABRICKS_CLIENT_ID }}
-          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
-          # Moved out of /Shared: that root grants "All workspace users: Can
-          # Manage" to every subfolder and it cannot be revoked per-folder.
-          # A path under the owner's Home directory defaults to owner +
-          # Admins only, so access is actually restricted to the people (and
-          # service principals) explicitly granted it below.
-          PROD_PATH: /Users/bompelli.thilak@gmail.com/PROD_DQ_Framework
-        run: bash deploy/deploy_to_prod.sh
+      # --- Databricks Asset Bundle deploy ----------------------------------
+      # Replaces a raw `databricks workspace import-dir` file copy. `bundle
+      # validate` catches a bad config with zero API calls; `bundle deploy`
+      # then applies the declared state of files, the DQ Framework job, and
+      # its permissions in one step — see databricks.yml for why this is the
+      # Databricks-recommended path rather than a POC shortcut.
+      - name: Validate bundle
+        run: databricks bundle validate -t prod
+
+      - name: Deploy bundle to PROD
+        run: databricks bundle deploy -t prod
 
       - name: Record deployment in the job summary
         run: |
           echo "## Deployment complete" >> $GITHUB_STEP_SUMMARY
+          echo "- Method: \`databricks bundle deploy -t prod\`" >> $GITHUB_STEP_SUMMARY
           echo "- Target: \`/Users/bompelli.thilak@gmail.com/PROD_DQ_Framework\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Job resource: \`dq_framework_job\` (see resources/dq_framework_job.yml)" >> $GITHUB_STEP_SUMMARY
           echo "- Commit: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- Actor:  @${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
