@@ -1,3 +1,4 @@
+#Demo
 """Declarative check configuration, loaded from YAML.
 
 Keeping the check catalogue in YAML rather than code means a data steward
