@@ -19,7 +19,7 @@ import os
 import subprocess
 
 
-# ---------------------------------------------------------------------------
+# DEMO---------------------------------------------------------------------------
 # VIOLATION 1 - Hard-coded credentials
 #   Rule:  python:S2068 ("Hard-coded credentials are security-sensitive")
 #   Type:  Security Hotspot (HIGH)
